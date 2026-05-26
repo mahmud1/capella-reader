@@ -41,17 +41,12 @@ from pathlib import Path
 import isce3
 import numpy as np
 from osgeo import gdal
+from pyproj import Transformer
 
 import capella_reader.adapters.isce3
 from capella_reader import CapellaSLC
 
 gdal.UseExceptions()
-
-# WGS84 ellipsoid
-WGS84_A = 6378137.0
-WGS84_E2 = 6.69437999014e-3
-
-DEFAULT_LINES_PER_BLOCK = 1024
 
 
 # ---------------------------------------------------------------------------
@@ -108,7 +103,7 @@ def run_geometry(slc_file: Path, dem_file: Path, output_dir: Path) -> Path:
         radar_grid,
         orbit,
         ellipsoid,
-        isce3.core.LUT2d(),
+        isce3.core.LUT2d(),  # Zero doppler grid geometry
         threshold=1e-8,
         numiter=20,
         extraiter=10,
@@ -186,22 +181,6 @@ class SpotlightGeometry:
         )
 
 
-def llh_to_ecef_wgs84(
-    lon_deg: np.ndarray, lat_deg: np.ndarray, height_m: np.ndarray
-) -> np.ndarray:
-    """Convert geodetic lon/lat/height to ECEF. Returns shape (..., 3)."""
-    lon = np.deg2rad(lon_deg)
-    lat = np.deg2rad(lat_deg)
-    sin_lat, cos_lat = np.sin(lat), np.cos(lat)
-    sin_lon, cos_lon = np.sin(lon), np.cos(lon)
-    # Radius of curvature in the prime vertical
-    N = WGS84_A / np.sqrt(1.0 - WGS84_E2 * sin_lat * sin_lat)
-    x = (N + height_m) * cos_lat * cos_lon
-    y = (N + height_m) * cos_lat * sin_lon
-    z = (N * (1.0 - WGS84_E2) + height_m) * sin_lat
-    return np.stack([x, y, z], axis=-1)
-
-
 def compute_restoration_phase(
     geometry: SpotlightGeometry, target_ecef: np.ndarray
 ) -> np.ndarray:
@@ -215,7 +194,7 @@ def apply_spotlight_phase_restoration(
     geometry_vrt: Path,
     output_file: Path,
     *,
-    lines_per_block: int = DEFAULT_LINES_PER_BLOCK,
+    lines_per_block: int = 1024,
 ) -> Path:
     """Restore the deramping phase, block by block, to a corrected GeoTIFF.
 
@@ -262,6 +241,9 @@ def apply_spotlight_phase_restoration(
     out_band = out_ds.GetRasterBand(1)
 
     t0 = time.time()
+    # Setup LLH to ECEF transformation
+    epsg_wgs84_ecef = 4978  # geocentric Cartesian XYZ on WGS84
+    transformer_llh_ecef = Transformer.from_crs(4326, epsg_wgs84_ecef)
     for r0 in range(0, rows, lines_per_block):
         nrow = min(lines_per_block, rows - r0)
         lon = lon_band.ReadAsArray(0, r0, cols, nrow)
@@ -269,7 +251,9 @@ def apply_spotlight_phase_restoration(
         hgt = hgt_band.ReadAsArray(0, r0, cols, nrow)
         slc_data = slc_band.ReadAsArray(0, r0, cols, nrow)
 
-        target_ecef = llh_to_ecef_wgs84(lon, lat, hgt)
+        # target_ecef = llh_to_ecef_wgs84(lon, lat, hgt)
+        target_ecef = transformer_llh_ecef.transform(lon, lat, hgt, radians=False)
+
         phi = compute_restoration_phase(geometry, target_ecef)
         corrected = (slc_data * np.exp(-1j * phi)).astype(np.complex64, copy=False)
 
