@@ -21,8 +21,11 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from osgeo import gdal
 
 logger = logging.getLogger(__name__)
+
+gdal.UseExceptions()
 
 
 # ---------------------------------------------------------------------------
@@ -63,6 +66,20 @@ def read_path_list(list_file: Path) -> list[Path]:
         raise FileNotFoundError(f"No paths found in {list_file}")
     logger.debug(f"Found {len(paths)} SLC paths in {list_file}")
     return paths
+
+
+def open_gdal(path: Path) -> gdal.Dataset:
+    """Open a file with GDAL."""
+
+    if not path.exists():
+        raise FileNotFoundError(f"File {path} not found")
+
+    ds = gdal.Open(str(path), gdal.GA_ReadOnly)
+    if ds is None:
+        raise FileNotFoundError(f"GDAL could not open {path}")
+    return ds
+
+
 
 # ---------------------------------------------------------------------------
 # CLI
