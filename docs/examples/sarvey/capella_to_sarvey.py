@@ -30,6 +30,7 @@ from osgeo import gdal
 logger = logging.getLogger(__name__)
 
 gdal.UseExceptions()
+C_M_PER_S = 299_792_458.0
 
 
 # ---------------------------------------------------------------------------
@@ -190,6 +191,72 @@ def validate_stack_dimensions(records: Sequence[SlcRecord]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Attributes helpers
+# ---------------------------------------------------------------------------
+
+
+def build_common_attrs(record: SlcRecord) -> dict[str, Any]:
+    """Create common MiaplPy root attributes."""
+
+    width = record.width
+    length = record.length
+
+    meta = record.metadata
+    image = nested_get(meta, ["collect", "image"], {}) or {}
+    radar = nested_get(meta, ["collect", "radar"], {}) or {}
+
+    alooks = image.get("azimuth_looks", 1)
+    azimuth_pixel_spacing = image.get("azimuth_resolution", "")
+
+    # Antenna side follows the historical ROI_PAC metadata convention:
+    # right-looking: -1. left looking: +1.
+    pointing = radar.get("pointing", None)
+    antenna_side = 1 if pointing == "left" else -1 if pointing == "right" else None
+    orbit_direction = nested_get(meta, ["collect", "state", "direction"], None)
+
+    platform = nested_get(meta, ["collect", "platform"], None)
+
+    transmit_polarization = radar.get("transmit_polarization")
+    receive_polarization = radar.get("receive_polarization")
+    if transmit_polarization is None or receive_polarization is None:
+        polarization = None
+    else:
+        polarization = f"{transmit_polarization}{receive_polarization}"
+
+    range_pixel_size = image.get("range_resolution")
+
+    rlooks = image.get("range_looks", 1)
+
+    starting_range = nested_get(image, ["image_geometry", "range_to_first_sample"])
+
+    freq = radar.get("center_frequency")
+    wavelength = C_M_PER_S / float(freq) if freq else None
+
+    attrs: dict[str, Any] = {
+        "ALOOKS": alooks,
+        "ANTENNA_SIDE": antenna_side,
+        "AZIMUTH_PIXEL_SIZE": azimuth_pixel_spacing,
+        "DATA_TYPE": "complex64",
+        "FILE_LENGTH": length,
+        "FILE_TYPE": "slc",
+        "LENGTH": length,
+        "ORBIT_DIRECTION": orbit_direction,
+        "PLATFORM": platform,
+        "POLARIZATION": polarization,
+        "PROCESSOR": "capella-reader",
+        "RANGE_PIXEL_SIZE": range_pixel_size,
+        "RLOOKS": rlooks,
+        "STARTING_RANGE": starting_range,
+        "WAVELENGTH": wavelength,
+        "WIDTH": width,
+        "XMAX": width - 1,
+        "YMAX": length - 1,
+    }
+
+    return attrs
+
+
+# ---------------------------------------------------------------------------
 # HDF5 writers
 # ---------------------------------------------------------------------------
 
@@ -203,7 +270,15 @@ def write_slc_stack(
 
     length, width = records[0].length, records[0].width
     out_file.parent.mkdir(parents=True, exist_ok=True)
+    attrs = build_common_attrs(records[0])
+    attrs.update(
+        {
+            "FILE_PATH": str(out_file),
+        }
+    )
+
     with h5py.File(out_file, "w") as f:
+        write_attrs(f, attrs)
         dset = f.create_dataset(
             "slc",
             shape=(len(records), length, width),
@@ -219,6 +294,15 @@ def write_slc_stack(
                     f"expected {(length, width)}"
                 )
             dset[i, :, :] = arr
+
+
+def write_attrs(h5obj: Any, attrs: Mapping[str, Any]) -> None:
+    """Write scalar/string HDF5 attributes."""
+
+    for key, value in attrs.items():
+        if value is None:
+            continue
+        h5obj.attrs[str(key)] = value
 
 
 # ---------------------------------------------------------------------------
