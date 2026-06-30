@@ -148,6 +148,23 @@ def discover_slcs(paths: Sequence[Path], sort_by_time: bool = True) -> list[SlcR
     return records
 
 
+def validate_stack_dimensions(records: Sequence[SlcRecord]) -> tuple[int, int]:
+    """Validate that all SLCs share the same dimension."""
+
+    def _shape(path: Path) -> tuple[int, int]:
+        ds = open_gdal(path)
+        return int(ds.RasterYSize), int(ds.RasterXSize)
+
+    length, width = _shape(records[0].path)
+    for rec in records[1:]:
+        shp = _shape(rec.path)
+        if shp != (length, width):
+            msg = f"SLC shape mismatch: {rec.path} has shape {shp}, expected {(length, width)}"
+            logger.error(msg)
+            raise ValueError(msg)
+    return length, width
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -200,6 +217,8 @@ def main() -> None:
     )
     slc_paths = read_path_list(args.slc_list)
     records = discover_slcs(slc_paths, sort_by_time=True)
+    length, width = validate_stack_dimensions(records)
+    logger.info(f"Identified {len(records)} SLC(c) with {length}x{width} dimensions")
 
 
 if __name__ == "__main__":
