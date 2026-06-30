@@ -14,12 +14,37 @@ Usage
 """
 
 import argparse
+import os
+import re
 import logging
 from pathlib import Path
 
 
 logger = logging.getLogger(__name__)
 
+def read_path_list(list_file: Path) -> list[Path]:
+    """
+    Read an ASCII list of SLC TIFF paths.
+
+    Blank lines and lines starting with '#' are ignored. Inline comments are allowed
+    only when preceded by whitespace, e.g. '/path/a.tif  # comment'.
+    """
+
+    paths: list[Path] = []
+    base = list_file.resolve().parent
+    for raw in list_file.read_text().splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        line = re.split(r"\s+#", line, maxsplit=1)[0].strip()
+        p = Path(os.path.expandvars(os.path.expanduser(line)))
+        if not p.is_absolute():
+            p = base / p
+        paths.append(p.resolve())
+    if not paths:
+        raise FileNotFoundError(f"No paths found in {list_file}")
+    logger.debug(f"Found {len(paths)} SLC paths in {list_file}")
+    return paths
 
 # ---------------------------------------------------------------------------
 # CLI
@@ -71,6 +96,7 @@ def main() -> None:
         datefmt="%H:%M:%S",
         handlers=handlers,
     )
+    slc_paths = read_path_list(args.slc_list)
 
 
 if __name__ == "__main__":
