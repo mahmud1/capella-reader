@@ -14,7 +14,11 @@ Usage
 """
 
 import argparse
+import logging
 from pathlib import Path
+
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -39,7 +43,34 @@ def main() -> None:
         choices=["gzip", "lzf", "none"],
         help="HDF5 compression",
     )
+    parser.add_argument(
+        "--log-level",
+        default="INFO",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        help="Logging level.",
+    )
+    parser.add_argument(
+        "--log-file",
+        type=Path,
+        help="Write log messages to this file.",
+    )
     args = parser.parse_args()
+
+    # setup logger
+    console_handler = logging.StreamHandler()
+
+    handlers = [console_handler]
+
+    if args.log_file is not None:
+        file_handler = logging.FileHandler(args.log_file)
+        handlers.append(file_handler)
+
+    logging.basicConfig(
+        level=getattr(logging, args.log_level),
+        format="%(asctime)s %(levelname)-8s %(message)s",
+        datefmt="%H:%M:%S",
+        handlers=handlers,
+    )
 
 
 if __name__ == "__main__":
