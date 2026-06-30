@@ -17,10 +17,28 @@ import argparse
 import os
 import re
 import logging
+from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Utilities
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class SlcRecord:
+    """Container for one SLC path and its decoded Capella metadata."""
+
+    path: Path
+    date: str
+    center_time: datetime
+    metadata: dict[str, Any]
+
 
 def read_path_list(list_file: Path) -> list[Path]:
     """
