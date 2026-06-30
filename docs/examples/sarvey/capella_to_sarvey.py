@@ -21,7 +21,7 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping, Sequence
 
 from osgeo import gdal
 
@@ -96,6 +96,38 @@ def load_capella_metadata(path: Path) -> dict[str, Any]:
 
     return obj
 
+
+def nested_get(obj: Mapping[str, Any], keys: Sequence[str], default: Any = None) -> Any:
+    """Read nested dictionary keys, returning default when any key is absent."""
+
+    cur: Any = obj
+    for key in keys:
+        if not isinstance(cur, Mapping) or key not in cur:
+            return default
+        cur = cur[key]
+    return cur
+
+
+def parse_iso8601(value: str) -> datetime:
+    """Parse Capella timestamps in ISO8601 format."""
+
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    # Python datetime supports microseconds, not nanoseconds.
+    text = re.sub(r"(\.\d{6})\d+(?=[+-]\d\d:?\d\d$)", r"\1", text)
+    text = re.sub(r"([+-]\d{2})(\d{2})$", r"\1:\2", text)
+    return datetime.fromisoformat(text)
+
+
+def datetime_from_meta(meta: Mapping[str, Any]) -> datetime:
+    """Extract center time from Capella metadata."""
+
+    t = nested_get(meta, ["collect", "image", "center_pixel", "center_time"])
+    if not t:
+        raise ValueError("Could not find center time in Capella metadata")
+    dt = parse_iso8601(str(t))
+    return dt
 
 
 # ---------------------------------------------------------------------------
