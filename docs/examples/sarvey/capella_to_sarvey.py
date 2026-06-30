@@ -18,7 +18,7 @@ import json
 import os
 import re
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -40,9 +40,12 @@ class SlcRecord:
     """Container for one SLC path and its decoded Capella metadata."""
 
     path: Path
-    date: str
     center_time: datetime
     metadata: dict[str, Any]
+    date: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "date", self.center_time.strftime("%Y%m%d"))
 
 
 def read_path_list(list_file: Path) -> list[Path]:
@@ -130,6 +133,21 @@ def datetime_from_meta(meta: Mapping[str, Any]) -> datetime:
     return dt
 
 
+def discover_slcs(paths: Sequence[Path], sort_by_time: bool = True) -> list[SlcRecord]:
+    """Read metadata for every SLC path and return validated/sorted records."""
+
+    records = []
+    for path in paths:
+        meta = load_capella_metadata(path)
+        center = datetime_from_meta(meta)
+        records.append(SlcRecord(path=path, center_time=center, metadata=meta))
+    if sort_by_time:
+        records.sort(key=lambda r: (r.center_time, str(r.path)))
+
+    # TODO: check duplicate acquisitions based on center_time?
+    return records
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -181,6 +199,7 @@ def main() -> None:
         handlers=handlers,
     )
     slc_paths = read_path_list(args.slc_list)
+    records = discover_slcs(slc_paths, sort_by_time=True)
 
 
 if __name__ == "__main__":
