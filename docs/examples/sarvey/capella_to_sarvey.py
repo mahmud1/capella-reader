@@ -23,6 +23,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+import h5py
+import numpy as np
 from osgeo import gdal
 
 logger = logging.getLogger(__name__)
@@ -148,6 +150,26 @@ def discover_slcs(paths: Sequence[Path], sort_by_time: bool = True) -> list[SlcR
     return records
 
 
+def read_slc_array(path: Path) -> np.ndarray:
+    """Read one Capella SLC TIFF as complex64."""
+
+    ds = open_gdal(path)
+    arr = ds.ReadAsArray()
+
+    if arr is None:
+        raise ValueError(f"Failed to read raster data from {path}")
+
+    arr = np.asarray(arr)
+
+    if not np.iscomplexobj(arr):
+        raise TypeError(f"Raster data in {path} is not complex.")
+
+    if arr.ndim != 2:
+        raise ValueError(f"Raster data in {path} has {arr.ndim} dimensions; expected 2.")
+
+    return arr.astype(np.complex64, copy=False)
+
+
 def validate_stack_dimensions(records: Sequence[SlcRecord]) -> tuple[int, int]:
     """Validate that all SLCs share the same dimension."""
 
@@ -166,6 +188,39 @@ def validate_stack_dimensions(records: Sequence[SlcRecord]) -> tuple[int, int]:
 
 
 # ---------------------------------------------------------------------------
+# HDF5 writers
+# ---------------------------------------------------------------------------
+
+
+def write_slc_stack(
+    out_file: Path,
+    records: Sequence[SlcRecord],
+    length: int,
+    width: int,
+    compression: str | None,
+) -> None:
+    """Write MiaplPy-style slcStack.h5."""
+
+    out_file.parent.mkdir(parents=True, exist_ok=True)
+    with h5py.File(out_file, "w") as f:
+        dset = f.create_dataset(
+            "slc",
+            shape=(len(records), length, width),
+            dtype=np.complex64,
+            compression=compression,
+        )
+        for i, rec in enumerate(records):
+            logger.info(f"[{i + 1}/{len(records)}] writing SLC {rec.date}: {rec.path}")
+            arr = read_slc_array(rec.path)
+            if arr.shape != (length, width):
+                raise ValueError(
+                    f"SLC array shape mismatch after read: {rec.path} has {arr.shape}, "
+                    f"expected {(length, width)}"
+                )
+            dset[i, :, :] = arr
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -180,6 +235,12 @@ def main() -> None:
         required=True,
         type=Path,
         help="ASCII file containing one SLC TIFF path per line",
+    )
+    parser.add_argument(
+        "--out-dir",
+        type=Path,
+        default=Path("inputs"),
+        help="Output directory for MiaplPy/SARvey inputs",
     )
     parser.add_argument(
         "--compression",
@@ -215,10 +276,20 @@ def main() -> None:
         datefmt="%H:%M:%S",
         handlers=handlers,
     )
+    compression: str | None = None if args.compression == "none" else args.compression
     slc_paths = read_path_list(args.slc_list)
     records = discover_slcs(slc_paths, sort_by_time=True)
     length, width = validate_stack_dimensions(records)
     logger.info(f"Identified {len(records)} SLC(c) with {length}x{width} dimensions")
+
+    out_dir = args.out_dir.resolve()
+    write_slc_stack(
+        out_dir / "slcStack.h5",
+        records,
+        length,
+        width,
+        compression=compression,
+    )
 
 
 if __name__ == "__main__":
