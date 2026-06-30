@@ -45,9 +45,15 @@ class SlcRecord:
     center_time: datetime
     metadata: dict[str, Any]
     date: str = field(init=False)
+    length: float = field(init=False)
+    width: float = field(init=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "date", self.center_time.strftime("%Y%m%d"))
+
+        ds = open_gdal(self.path)
+        object.__setattr__(self, "length", int(ds.RasterYSize))
+        object.__setattr__(self, "width", int(ds.RasterXSize))
 
 
 def read_path_list(list_file: Path) -> list[Path]:
@@ -170,21 +176,17 @@ def read_slc_array(path: Path) -> np.ndarray:
     return arr.astype(np.complex64, copy=False)
 
 
-def validate_stack_dimensions(records: Sequence[SlcRecord]) -> tuple[int, int]:
+def validate_stack_dimensions(records: Sequence[SlcRecord]) -> None:
     """Validate that all SLCs share the same dimension."""
 
-    def _shape(path: Path) -> tuple[int, int]:
-        ds = open_gdal(path)
-        return int(ds.RasterYSize), int(ds.RasterXSize)
-
-    length, width = _shape(records[0].path)
+    length, width = records[0].length, records[0].width
     for rec in records[1:]:
-        shp = _shape(rec.path)
+        shp = (rec.length, rec.width)
         if shp != (length, width):
-            msg = f"SLC shape mismatch: {rec.path} has shape {shp}, expected {(length, width)}"
-            logger.error(msg)
-            raise ValueError(msg)
-    return length, width
+            raise ValueError(
+                f"SLC shape mismatch: {rec.path} has shape {shp}, expected {(length, width)}"
+            )
+    return
 
 
 # ---------------------------------------------------------------------------
@@ -195,12 +197,11 @@ def validate_stack_dimensions(records: Sequence[SlcRecord]) -> tuple[int, int]:
 def write_slc_stack(
     out_file: Path,
     records: Sequence[SlcRecord],
-    length: int,
-    width: int,
     compression: str | None,
 ) -> None:
     """Write MiaplPy-style slcStack.h5."""
 
+    length, width = records[0].length, records[0].width
     out_file.parent.mkdir(parents=True, exist_ok=True)
     with h5py.File(out_file, "w") as f:
         dset = f.create_dataset(
@@ -279,15 +280,13 @@ def main() -> None:
     compression: str | None = None if args.compression == "none" else args.compression
     slc_paths = read_path_list(args.slc_list)
     records = discover_slcs(slc_paths, sort_by_time=True)
-    length, width = validate_stack_dimensions(records)
-    logger.info(f"Identified {len(records)} SLC(c) with {length}x{width} dimensions")
+    validate_stack_dimensions(records)
+    logger.info(f"Identified {len(records)} SLC(c) with {records[0].length}x{records[0].width} dimensions")
 
     out_dir = args.out_dir.resolve()
     write_slc_stack(
         out_dir / "slcStack.h5",
         records,
-        length,
-        width,
         compression=compression,
     )
 
