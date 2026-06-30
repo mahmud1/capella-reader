@@ -14,12 +14,14 @@ Usage
 """
 
 import argparse
+import json
 import os
 import re
 import logging
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from osgeo import gdal
 
@@ -78,6 +80,21 @@ def open_gdal(path: Path) -> gdal.Dataset:
     if ds is None:
         raise FileNotFoundError(f"GDAL could not open {path}")
     return ds
+
+
+def load_capella_metadata(path: Path) -> dict[str, Any]:
+    """Decode Capella JSON/Python-literal metadata from TIFFTAG_IMAGEDESCRIPTION."""
+
+    ds = open_gdal(path)
+    desc = ds.GetMetadataItem("TIFFTAG_IMAGEDESCRIPTION")
+
+    try:
+        obj = json.loads(desc)
+    except json.JSONDecodeError:
+        logger.exception("Failed to parse metadata from %s", path)
+        raise
+
+    return obj
 
 
 
