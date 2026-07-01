@@ -300,6 +300,122 @@ def compute_heading(meta: Mapping[str, Any]) -> float:
     heading = np.degrees(np.arctan2(v_e, v_n))
     return (heading + 360.0) % 360.0
 
+
+def default_geometry_map(root: Path) -> dict[str, Path]:
+    """
+    Return default Capella geometry raster mapping under one geometry directory.
+
+    These dataset names follow the geometryRadar.h5 naming expected by
+    MiaplPy/SARvey. The filenames are the default Capella-derived filenames
+    used by this converter. A future config file can override this mapping.
+    """
+
+    return {
+        "height": root / "z.tif",
+        "incidenceAngle": root / "incidence_angle.tif",
+        "latitude": root / "y.tif",
+        "longitude": root / "x.tif",
+        "shadowMask": root / "layover_shadow_mask.tif",
+    }
+
+
+def slant_range_row(
+    meta: Mapping[str, Any],
+    width: int,
+    dtype: np.dtype = np.float32,
+) -> np.ndarray:
+    """
+    Compute one slantRangeDistance row from Capella image geometry metadata.
+
+    The generated row is:
+
+        range_to_first_sample + column_index * delta_range_sample
+    """
+
+    geom = nested_get(meta, ["collect", "image", "image_geometry"], {}) or {}
+    r0 = geom.get("range_to_first_sample")
+    dr = geom.get("delta_range_sample")
+    if r0 is None or dr is None:
+        raise ValueError(
+            "Metadata missing collect.image.image_geometry.range_to_first_sample "
+            "or delta_range_sample"
+        )
+
+    return (float(r0) + np.arange(width, dtype=np.float64) * float(dr)).astype(dtype)
+
+
+def write_geometry(
+    out_file: Path,
+    geom_paths: Mapping[str, Path],
+    reference_record: SlcRecord,
+    compression: str | None,
+) -> None:
+    """Write MiaplPy/SARvey geometryRadar.h5 from default Capella geometry rasters."""
+
+    length = int(reference_record.length)
+    width = int(reference_record.width)
+    meta = reference_record.metadata
+
+    out_file.parent.mkdir(parents=True, exist_ok=True)
+
+    attrs = build_common_attrs(reference_record)
+    attrs.update(
+        {
+            "FILE_TYPE": "geometry",
+            "FILE_PATH": str(out_file),
+        }
+    )
+
+
+    with h5py.File(out_file, "w") as f:
+        written: set[str] = set()
+
+        for name, path in geom_paths.items():
+            if not path.exists():
+                logger.warning("Geometry file missing; skipping %s: %s", name, path)
+                continue
+
+            logger.info("Writing geometry %s: %s", name, path)
+            arr = read_raster(path)
+
+            if arr.shape != (length, width):
+                raise ValueError(
+                    f"Geometry shape mismatch for {name}: {path} has {arr.shape}, "
+                    f"expected {(length, width)}"
+                )
+
+            if name.lower().endswith("mask") or name in {"shadowMask", "waterMask"}:
+                data = arr.astype(np.uint8, copy=False)
+            else:
+                data = arr.astype(np.float32, copy=False)
+
+            f.create_dataset(
+                name,
+                data=data,
+                dtype=data.dtype,
+                compression=compression,
+            )
+
+            written.add(name)
+
+
+        logger.info("Writing generated geometry slantRangeDistance")
+        row = slant_range_row(meta, width, dtype=np.float32)
+        slant_range = np.broadcast_to(row, (length, width)).astype(np.float32, copy=False)
+
+        ds = f.create_dataset(
+            "slantRangeDistance",
+            data=slant_range,
+            dtype=np.float32,
+            compression=compression,
+        )
+        ds.attrs["UNIT"] = "m"
+        ds.attrs["DESCRIPTION"] = "range_to_first_sample + column_index * delta_range_sample"
+
+        written.add("slantRangeDistance")
+
+        write_attrs(f, attrs)
+
 # ---------------------------------------------------------------------------
 # Perpendicular Baseline
 # ---------------------------------------------------------------------------
@@ -503,6 +619,11 @@ def main() -> None:
         help="ASCII file containing one SLC TIFF path per line",
     )
     parser.add_argument(
+        "--geometry-root",
+        type=Path,
+        help="Directory containing geometry TIFFs",
+    )
+    parser.add_argument(
         "--out-dir",
         type=Path,
         default=Path("inputs"),
@@ -518,6 +639,11 @@ def main() -> None:
         "--skip-slc",
         action="store_true",
         help="Skip writing slcStack.h5",
+    )
+    parser.add_argument(
+        "--skip-geometry",
+        action="store_true",
+        help="Skip writing geometryRadar.h5",
     )
     parser.add_argument(
         "--log-level",
@@ -560,6 +686,21 @@ def main() -> None:
         write_slc_stack(
             out_dir / "slcStack.h5",
             records,
+            compression=compression,
+        )
+
+    if args.skip_geometry:
+        logger.debug("Skipping geometryRadar.h5")
+    else:
+        if args.geometry_root is None:
+            raise ValueError("Provide --geometry-root or use --skip-geometry")
+
+        geom_paths = default_geometry_map(args.geometry_root.resolve())
+
+        write_geometry(
+            out_dir / "geometryRadar.h5",
+            geom_paths,
+            records[0],
             compression=compression,
         )
 
