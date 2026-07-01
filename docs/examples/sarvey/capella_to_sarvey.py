@@ -157,7 +157,7 @@ def discover_slcs(paths: Sequence[Path], sort_by_time: bool = True) -> list[SlcR
     return records
 
 
-def read_slc_array(path: Path) -> np.ndarray:
+def read_raster(path: Path, dtype: np.dtype | None = None) -> np.ndarray:
     """Read one Capella SLC TIFF as complex64."""
 
     ds = open_gdal(path)
@@ -168,13 +168,12 @@ def read_slc_array(path: Path) -> np.ndarray:
 
     arr = np.asarray(arr)
 
-    if not np.iscomplexobj(arr):
-        raise TypeError(f"Raster data in {path} is not complex.")
-
     if arr.ndim != 2:
         raise ValueError(f"Raster data in {path} has {arr.ndim} dimensions; expected 2.")
 
-    return arr.astype(np.complex64, copy=False)
+    if dtype is not None:
+        arr = arr.astype(dtype, copy=False)
+    return arr
 
 
 def validate_stack_dimensions(records: Sequence[SlcRecord]) -> None:
@@ -463,7 +462,7 @@ def write_slc_stack(
 
         for i, rec in enumerate(records):
             logger.info(f"[{i + 1}/{len(records)}] writing SLC {rec.date}: {rec.path}")
-            arr = read_slc_array(rec.path)
+            arr = read_raster(rec.path, dtype=np.complex64)
             if arr.shape != (length, width):
                 raise ValueError(
                     f"SLC array shape mismatch after read: {rec.path} has {arr.shape}, "
