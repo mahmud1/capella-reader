@@ -214,6 +214,8 @@ def build_common_attrs(record: SlcRecord) -> dict[str, Any]:
     antenna_side = 1 if pointing == "left" else -1 if pointing == "right" else None
     orbit_direction = nested_get(meta, ["collect", "state", "direction"], None)
 
+    heading_angle = compute_heading(meta)
+
     platform = nested_get(meta, ["collect", "platform"], None)
 
     transmit_polarization = radar.get("transmit_polarization")
@@ -239,6 +241,7 @@ def build_common_attrs(record: SlcRecord) -> dict[str, Any]:
         "DATA_TYPE": "complex64",
         "FILE_LENGTH": length,
         "FILE_TYPE": "slc",
+        "HEADING": heading_angle,
         "LENGTH": length,
         "ORBIT_DIRECTION": orbit_direction,
         "PLATFORM": platform,
@@ -255,6 +258,48 @@ def build_common_attrs(record: SlcRecord) -> dict[str, Any]:
 
     return attrs
 
+
+# ---------------------------------------------------------------------------
+# Geometry
+# ---------------------------------------------------------------------------
+
+
+def compute_heading(meta: Mapping[str, Any]) -> float:
+    """
+    Compute the approximate satellite heading angle (degrees clockwise from north)
+    at the image center.
+
+    The heading is derived from the orbit velocity nearest to
+    ``collect.image.center_pixel.center_time``. The velocity vector is projected
+    onto the local east-north-up (ENU) frame at
+    ``collect.image.center_pixel.target_position``, and the heading is measured
+    clockwise from geographic north.
+    """
+    target = _vec(nested_get(meta, ["collect", "image", "center_pixel", "target_position"]))
+    vel = _velocity_at_center_time(meta)
+
+    # approximate geocentric latitude / longitude
+    x, y, z = target
+    lon = np.arctan2(y, x)
+    lat = np.arctan2(z, np.hypot(x, y))
+
+    east = np.array([
+        -np.sin(lon),
+         np.cos(lon),
+         0.0,
+    ])
+
+    north = np.array([
+        -np.sin(lat) * np.cos(lon),
+        -np.sin(lat) * np.sin(lon),
+         np.cos(lat),
+    ])
+
+    v_e = np.dot(vel, east)
+    v_n = np.dot(vel, north)
+
+    heading = np.degrees(np.arctan2(v_e, v_n))
+    return (heading + 360.0) % 360.0
 
 # ---------------------------------------------------------------------------
 # Perpendicular Baseline
