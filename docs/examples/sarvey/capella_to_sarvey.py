@@ -257,6 +257,124 @@ def build_common_attrs(record: SlcRecord) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Perpendicular Baseline
+# ---------------------------------------------------------------------------
+
+
+def _vec(value: Any) -> np.ndarray:
+    """Convert Capella vector dict/list into a float64 vector."""
+
+    if isinstance(value, Mapping):
+        return np.array([value["x"], value["y"], value["z"]], dtype=np.float64)
+    return np.asarray(value, dtype=np.float64)
+
+
+def _unit(v: np.ndarray, name: str) -> np.ndarray:
+    """Return unit vector, raising on invalid/zero norm."""
+
+    n = float(np.linalg.norm(v))
+    if not np.isfinite(n) or n == 0.0:
+        raise ValueError(f"Invalid zero-length vector for {name}")
+    return v / n
+
+
+def _state_vectors(meta: Mapping[str, Any]) -> Sequence[Mapping[str, Any]]:
+    """Return Capella orbit state vectors from the known metadata path."""
+
+    states = nested_get(meta, ["collect", "state", "state_vectors"])
+    if not states:
+        raise ValueError("Could not find collect.state.state_vectors in Capella metadata")
+
+    if not isinstance(states, Sequence) or isinstance(states, (str, bytes)):
+        raise TypeError("collect.state.state_vectors must be a sequence")
+
+    for i, state in enumerate(states):
+        if not isinstance(state, Mapping):
+            raise TypeError(f"collect.state.state_vectors[{i}] must be a mapping")
+        if "time" not in state or "position" not in state or "velocity" not in state:
+            raise ValueError(
+                f"collect.state.state_vectors[{i}] must contain time, position, and velocity"
+            )
+
+    return states
+
+
+def _velocity_at_center_time(meta: Mapping[str, Any]) -> np.ndarray:
+    """Return orbit velocity nearest to collect.image.center_pixel.center_time."""
+
+    center_time = nested_get(meta, ["collect", "image", "center_pixel", "center_time"])
+    if center_time is None:
+        raise ValueError("Could not find collect.image.center_pixel.center_time in metadata")
+
+    t0 = parse_iso8601(str(center_time))
+    states = _state_vectors(meta)
+
+    state = min(
+        states,
+        key=lambda s: abs((parse_iso8601(str(s["time"])) - t0).total_seconds()),
+    )
+
+    vel = state["velocity"]
+    return np.array([vel["vx"], vel["vy"], vel["vz"]], dtype=np.float64)
+
+
+def compute_bperp(records: Sequence[SlcRecord], ref_index: int = 0, flip_sign: bool = False) -> np.ndarray:
+    """
+    Compute signed approximate perpendicular baselines relative to one reference acquisition.
+
+    The baseline is computed from Capella ECEF metadata at the reference scene geometry.
+    The reference satellite position and reference target position define the line-of-sight
+    vector, while the reference orbit velocity defines the along-track direction. The
+    signed perpendicular direction is the orbital-frame cross-track direction:
+
+        los = unit(target_ref - sat_ref)
+        along_track = unit(reference_velocity)
+        along_track = unit(along_track - dot(along_track, los) * los)
+        cross_track = unit(cross(along_track, los))
+        bperp_i = dot(sat_i - sat_ref, cross_track)
+
+    This produces a signed Bperp value for each acquisition in meters. The reference
+    acquisition has Bperp close to zero by construction. The sign follows the cross-track
+    orientation defined by cross(along_track, los). Set flip_sign=True if an external
+    processor shows the opposite convention.
+
+    """
+    if not records:
+        return np.asarray([], dtype=np.float32)
+
+    metas = [r.metadata for r in records]
+    ref_meta = metas[ref_index]
+
+    sat_ref = _vec(nested_get(ref_meta, ["collect", "image", "reference_antenna_position"]))
+    tgt_ref = _vec(nested_get(ref_meta, ["collect", "image", "reference_target_position"]))
+    vel_ref = _velocity_at_center_time(ref_meta)
+
+    los = _unit(tgt_ref - sat_ref, "reference LOS")
+    along_track = _unit(vel_ref, "reference velocity")
+
+    # Keep only the component of velocity perpendicular to LOS.
+    along_track = _unit(
+        along_track - np.dot(along_track, los) * los,
+        "LOS-orthogonal reference velocity",
+    )
+
+    cross_track = _unit(np.cross(along_track, los), "cross-track direction")
+    if flip_sign:
+        cross_track *= -1.0
+
+    out: list[float] = []
+    for meta in metas:
+        sat = _vec(nested_get(meta, ["collect", "image", "reference_antenna_position"]))
+        baseline = sat - sat_ref
+
+        bperp = float(np.dot(baseline, cross_track))
+
+        out.append(bperp)
+
+    return np.asarray(out, dtype=np.float32)
+
+
+# ---------------------------------------------------------------------------
 # HDF5 writers
 # ---------------------------------------------------------------------------
 
@@ -294,6 +412,12 @@ def write_slc_stack(
                     f"expected {(length, width)}"
                 )
             dset[i, :, :] = arr
+        f.create_dataset(
+            "bperp",
+            data=compute_bperp(records, ref_index=0),
+            dtype=np.float32,
+        )
+
 
 
 def write_attrs(h5obj: Any, attrs: Mapping[str, Any]) -> None:
