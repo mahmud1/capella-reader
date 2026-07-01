@@ -448,6 +448,19 @@ def write_slc_stack(
             dtype=np.complex64,
             compression=compression,
         )
+        f.create_dataset(
+            "date",
+            data=np.asarray([r.date.encode("ascii") for r in records], dtype="|S8"),
+        )
+
+        f.create_dataset(
+            "acquisition_time",
+            data=np.asarray(
+                [r.center_time.isoformat().encode("ascii") for r in records],
+                dtype="S32",
+            ),
+        )
+
         for i, rec in enumerate(records):
             logger.info(f"[{i + 1}/{len(records)}] writing SLC {rec.date}: {rec.path}")
             arr = read_slc_array(rec.path)
