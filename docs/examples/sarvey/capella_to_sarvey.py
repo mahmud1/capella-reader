@@ -516,6 +516,11 @@ def main() -> None:
         help="HDF5 compression",
     )
     parser.add_argument(
+        "--skip-slc",
+        action="store_true",
+        help="Skip writing slcStack.h5",
+    )
+    parser.add_argument(
         "--log-level",
         default="INFO",
         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
@@ -550,11 +555,14 @@ def main() -> None:
     logger.info(f"Identified {len(records)} SLC(c) with {records[0].length}x{records[0].width} dimensions")
 
     out_dir = args.out_dir.resolve()
-    write_slc_stack(
-        out_dir / "slcStack.h5",
-        records,
-        compression=compression,
-    )
+    if args.skip_slc:
+        logger.debug("Skipping writing slcStack.h5")
+    else:
+        write_slc_stack(
+            out_dir / "slcStack.h5",
+            records,
+            compression=compression,
+        )
 
 
 if __name__ == "__main__":
